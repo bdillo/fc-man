@@ -1,0 +1,9 @@
+[package]
+name = "fc-man"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.22"
+nix = { version = "0.29.0", features = ["fs"] }
+thiserror = "1.0.63"
