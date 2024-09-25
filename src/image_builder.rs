@@ -10,11 +10,10 @@
 // done!
 
 use log::debug;
-use nix::{errno::Errno, libc::off_t, unistd::truncate};
+use nix::{errno::Errno, libc::off_t, mount::mount, unistd::truncate};
 use std::{
-    fs::File,
+    fs::{self, File},
     io,
-    os::fd::{AsRawFd, RawFd},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -23,7 +22,7 @@ use thiserror::Error;
 // TODO: move this out into some sort of context struct?
 const VAR_DIR: &str = "/var/lib/fc-man";
 const ROOTFS_DIR: &str = "rootfs";
-const MOUT_DIR: &str = "mount";
+const MOUNT: &str = "mount";
 
 const MKFS_EXT4: &str = "mkfs.ext4";
 
@@ -43,26 +42,42 @@ struct Image<'a> {
     kernel_path: &'a Path,
 }
 
+/// Marker trait for our filesystem state structs. Doing this to restrict what types `ImageRootFs` is generic over
+pub trait ImageRootFsState {}
+
+/// The states of our image root filesystems - either mounted or unmounted
+struct Unmounted;
+struct Mounted;
+
+impl ImageRootFsState for Unmounted {}
+impl ImageRootFsState for Mounted {}
+
 /// An image's rootfs
-struct ImageRootFs {
+struct ImageRootFs<State: ImageRootFsState> {
+    name: String,
     path: PathBuf,
+    state: State,
     // raw_fd: RawFd,
 }
 
-impl ImageRootFs {
+impl ImageRootFs<Unmounted> {
     /// Create a new root fs with given name - this creates the file
     fn new(image_name: &str) -> Result<Self, ImageBuilderError> {
         let path = PathBuf::from(format!("{VAR_DIR}/{ROOTFS_DIR}/{image_name}"));
         debug!("Creating new image root fs at {:?}", &path);
-        let file = File::create_new(&path)?;
+        // let file = File::create_new(&path)?;
         // let raw_fd = file.as_raw_fd();
 
         // Ok(Self { path, raw_fd })
-        Ok(Self { path })
+        Ok(Self {
+            name: image_name.to_owned(),
+            path,
+            state: Unmounted,
+        })
     }
 
     /// Allocate disk space for our image
-    fn fallocate(&self, size: off_t) -> Result<(), ImageBuilderError> {
+    fn allocate_file(&self, size: off_t) -> Result<(), ImageBuilderError> {
         debug!("Allocating {} bytes to file at {:?}", size, &self.path);
         Ok(truncate(&self.path, size)?)
     }
@@ -79,6 +94,35 @@ impl ImageRootFs {
 
         Ok(())
     }
+
+    fn mount(self) -> Result<ImageRootFs<Mounted>, ImageBuilderError> {
+        let mount_dir_name = format!("{}/{}/{}", VAR_DIR, MOUNT, &self.name);
+        let mount_dir = Path::new(&mount_dir_name);
+        fs::create_dir(mount_dir)?;
+
+        // TODO: looks like the mount syscall has different args based on linux/macos, don't really want to do
+        // conditional compilation. Should find a better solution
+        let output = Command::new(MOUNT)
+            .arg(&self.path)
+            .arg(mount_dir)
+            .output()?;
+
+        if !output.stderr.is_empty() {
+            debug!("{:?}", output.stderr);
+        }
+
+        Ok(ImageRootFs {
+            name: self.name,
+            path: self.path,
+            state: Mounted,
+        })
+    }
+}
+
+impl ImageRootFs<Mounted> {
+    fn copy_from_base_fs(&self, base_fs_path: &Path) -> Result<(), ImageBuilderError> {
+        todo!()
+    }
 }
 
 /// High level image builder
@@ -93,15 +137,11 @@ impl<'a> ImageBuilder<'a> {
         }
     }
 
-    fn mount(&self, image_root_fs: &ImageRootFs) -> Result<(), ImageBuilderError> {
-        todo!()
-    }
+    // fn copy_base_filesystem(&self, base_fs_path: &Path) -> Result<(), ImageBuilderError> {
+    //     todo!()
+    // }
 
-    fn copy_base_filesystem(&self, base_fs_path: &Path) -> Result<(), ImageBuilderError> {
-        todo!()
-    }
-
-    fn chroot(&self, image_root_fs: &ImageRootFs) -> Result<(), ImageBuilderError> {
+    fn chroot(&self, image_root_fs: &ImageRootFs<Mounted>) -> Result<(), ImageBuilderError> {
         todo!()
     }
 }
