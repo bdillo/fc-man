@@ -17,12 +17,12 @@ pub fn get_alpine_setup_commands() -> Vec<Command> {
             let mut cmd = Command::new(APK);
             cmd.args([
                 "add",
-                "linux-vert",
+                "linux-virt",
                 "mkinitfs", // TODO: is this needed?
                 "alpine-base",
                 "util-linux",
                 "openrc",
-                "sshd",
+                "openssh",
                 "sudo",
             ]);
             cmd
