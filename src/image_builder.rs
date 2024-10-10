@@ -20,7 +20,7 @@ use nix::{
 use once_cell::sync::Lazy;
 use std::{
     fs::{self, File},
-    io,
+    io::{self, BufReader, Read},
     marker::PhantomData,
     path::{Path, PathBuf, StripPrefixError},
     process::Command,
@@ -33,6 +33,7 @@ use crate::utils::get_alpine_setup_commands;
 
 // TODO: move this out into some sort of context struct?
 // also make this configurable
+// TODO: move these to be args rather than embedded statics
 static VAR_DIR_PATH: Lazy<&Path> = Lazy::new(|| Path::new("/var/lib/fc-man"));
 static IMAGE_BUILDER_DIR_PATH: Lazy<&Path> =
     Lazy::new(|| Path::new("/var/lib/fc-man/image-builder"));
@@ -42,18 +43,22 @@ static RESOLV_CONF_PATH: Lazy<&Path> = Lazy::new(|| Path::new("/etc/resolv.conf"
 const MOUNT: &str = "mount";
 const ROOTFS_FILENAME: &str = "rootfs.ext4";
 const MKFS_EXT4: &str = "mkfs.ext4";
+
+const BOOT: &str = "boot";
 const INITRAM_FS: &str = "initramfs-virt";
 const VMLINUZ: &str = "vmlinuz-virt";
+
+const GZIP_MAGIC_NUM: [u8; 3] = [0x1F, 0x8B, 0x08];
 
 // TODO: make these not bad
 #[derive(Error, Debug)]
 enum ImageBuilderError {
     #[error("IO Error")]
-    IoError(#[from] io::Error),
+    Io(#[from] io::Error),
     #[error("Syscall Error")]
-    SyscallError(#[from] Errno),
+    Syscall(#[from] Errno),
     #[error("Strip Prefix Error")]
-    StripPrefixError(#[from] StripPrefixError),
+    StripPrefix(#[from] StripPrefixError),
 }
 
 /// VM image with paths to all related components needed to launch a vm
@@ -200,6 +205,7 @@ impl ImageRootFs<Mounted> {
         // TODO: clean up this unwrap
         let mut resolv_conf_path = self.mount_dir.clone();
 
+        // pushing an absolute path replaces the entire existing path - so strip the leading '/' if there is one
         if RESOLV_CONF_PATH.starts_with("/") {
             resolv_conf_path.push(RESOLV_CONF_PATH.strip_prefix("/")?);
         } else {
@@ -222,6 +228,8 @@ impl ImageRootFs<Mounted> {
     fn execute_setup(&self, commands: Vec<Command>) -> Result<(), ImageBuilderError> {
         match unsafe { fork() } {
             Ok(ForkResult::Parent { child }) => {
+                // TODO: check this actually exits 0
+                debug!("Spawned pid {}", child);
                 waitpid(child, None)?;
             }
             Ok(ForkResult::Child) => {
@@ -229,6 +237,7 @@ impl ImageRootFs<Mounted> {
                 for mut cmd in commands {
                     cmd.status()?;
                 }
+                std::process::exit(0)
             }
             // TODO: cleanup
             Err(_) => panic!("fork failed!"),
@@ -237,8 +246,55 @@ impl ImageRootFs<Mounted> {
         Ok(())
     }
 
-    fn extract_vmlinuz_initramfs(&self) -> Result<(), ImageBuilderError> {
-        // fs::copy(, )
+    /// Grabs the initframfs before we unmount the rootfs and puts it in our working dir
+    fn extract_initramfs(&self) -> Result<(), ImageBuilderError> {
+        let mut initramfs_path = self.mount_dir.clone();
+        initramfs_path.push(BOOT);
+        initramfs_path.push(INITRAM_FS);
+
+        let mut dest_path = self.working_dir.clone();
+        dest_path.push(INITRAM_FS);
+
+        debug!(
+            "Copying initramfs from '{}' to '{}",
+            initramfs_path.display(),
+            dest_path.display()
+        );
+
+        fs::copy(initramfs_path, dest_path)?;
+
+        Ok(())
+    }
+
+    fn find_vmlinuz_gzip_offset(&self, vmlinuz_file: &File) -> Result<(), ImageBuilderError> {
+        todo!()
+    }
+
+    fn extract_and_decompress_vmlinuz(&self) -> Result<(), ImageBuilderError> {
+        let mut vmlinuz_path = self.mount_dir.clone();
+        vmlinuz_path.push(BOOT);
+        vmlinuz_path.push(VMLINUZ);
+
+        let vmlinuz = File::open(vmlinuz_path)?;
+        let mut reader = BufReader::new(vmlinuz);
+        let mut buf = [0; 1024];
+        let mut gzip_magic_num_offset: usize = 0;
+
+        loop {
+            let read = reader.read(&mut buf)?;
+
+            if read == 0 {
+                break;
+            }
+
+            if let Some(offset) = buf[..read]
+                .windows(GZIP_MAGIC_NUM.len())
+                .position(|window| window == GZIP_MAGIC_NUM)
+            {
+                gzip_magic_num_offset += offset;
+            }
+        }
+
         todo!()
     }
 
@@ -272,6 +328,7 @@ impl ImageBuilder {
 
         mounted_rootfs.copy_from_base_fs(base_fs_path)?;
         mounted_rootfs.execute_setup(get_alpine_setup_commands())?;
+        mounted_rootfs.extract_initramfs()?;
 
         // mounted_rootfs.unmount()?;
 

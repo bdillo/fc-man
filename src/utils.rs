@@ -35,8 +35,8 @@ pub fn get_alpine_setup_commands() -> Vec<Command> {
         },
         {
             // setup some terminal stuff for firecracker
+            // TODO: make this actually work
             let mut cmd = Command::new("/bin/echo");
-            // don't think this will work...
             cmd.args(["ttyS0", ">", "/etc/securetty"]);
             cmd
         },
