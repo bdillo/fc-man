@@ -20,7 +20,7 @@ use nix::{
 use once_cell::sync::Lazy;
 use std::{
     fs::{self, File},
-    io::{self, BufReader, Read},
+    io::{self, BufReader, Read, Seek},
     marker::PhantomData,
     path::{Path, PathBuf, StripPrefixError},
     process::Command,
@@ -44,6 +44,7 @@ const MKFS_EXT4: &str = "mkfs.ext4";
 const BOOT: &str = "boot";
 const INITRAM_FS: &str = "initramfs-virt";
 const VMLINUZ: &str = "vmlinuz-virt";
+const VMLINUX: &str = "vmlinux-virt";
 
 const GZIP_MAGIC_NUM: [u8; 3] = [0x1F, 0x8B, 0x08];
 
@@ -223,6 +224,7 @@ impl ImageRootFs<Mounted> {
 
     /// Grabs the initframfs before we unmount the rootfs and puts it in our working dir
     fn extract_initramfs(&self) -> Result<(), ImageBuilderError> {
+        // TODO: take path as arg
         let mut initramfs_path = self.mount_dir.clone();
         initramfs_path.push(BOOT);
         initramfs_path.push(INITRAM_FS);
@@ -241,10 +243,7 @@ impl ImageRootFs<Mounted> {
         Ok(())
     }
 
-    fn find_vmlinuz_gzip_offset<R: Read>(
-        &self,
-        vmlinuz_file: R,
-    ) -> Result<usize, ImageBuilderError> {
+    fn find_vmlinuz_gzip_offset<R: Read>(&self, vmlinuz_file: R) -> Result<u64, ImageBuilderError> {
         let mut reader = BufReader::new(vmlinuz_file);
         let mut buf = [0; 1024];
         let mut gzip_magic_num_offset: usize = 0;
@@ -260,7 +259,7 @@ impl ImageRootFs<Mounted> {
                 .position(|window| window == GZIP_MAGIC_NUM)
             {
                 gzip_magic_num_offset += offset;
-                return Ok(gzip_magic_num_offset);
+                return Ok(gzip_magic_num_offset as u64);
             } else {
                 gzip_magic_num_offset += read;
             }
@@ -268,13 +267,33 @@ impl ImageRootFs<Mounted> {
     }
 
     fn extract_and_decompress_vmlinuz(&self) -> Result<(), ImageBuilderError> {
+        // TODO: take all these paths as args
         let mut vmlinuz_path = self.mount_dir.clone();
         vmlinuz_path.push(BOOT);
         vmlinuz_path.push(VMLINUZ);
 
-        let vmlinuz = File::open(vmlinuz_path)?;
+        let mut vmlinuz = File::open(&vmlinuz_path)?;
 
-        todo!()
+        let offset = self.find_vmlinuz_gzip_offset(&vmlinuz)?;
+        debug!(
+            "Found gzip header at offset {} in file '{}'",
+            offset,
+            &vmlinuz_path.display()
+        );
+
+        vmlinuz.seek(io::SeekFrom::Start(offset))?;
+
+        // TODO: can probably switch this to use bufreader?
+        let mut gzip = GzDecoder::new(&vmlinuz);
+
+        let mut out_path = self.working_dir.clone();
+        out_path.push(VMLINUX);
+
+        let mut out = File::create_new(&out_path)?;
+        debug!("Writing decompressed kernel to '{}'", &out_path.display());
+        io::copy(&mut gzip, &mut out)?;
+
+        Ok(())
     }
 
     /// Unmounts our filesystem when we're done. This consumes self
@@ -355,8 +374,8 @@ impl ImageBuilder {
         mounted_rootfs.copy_from_base_fs(base_fs_path)?;
         mounted_rootfs.execute_setup(get_alpine_setup_commands())?;
         mounted_rootfs.extract_initramfs()?;
-
-        // mounted_rootfs.unmount()?;
+        mounted_rootfs.extract_and_decompress_vmlinuz()?;
+        mounted_rootfs.unmount()?;
 
         Ok(())
     }
@@ -383,7 +402,7 @@ mod test {
 
     #[test]
     fn test_find_gzip_offset() -> Result<(), ImageBuilderError> {
-        let mut successful_test_cases: Vec<(Cursor<Vec<u8>>, usize)> = vec![
+        let mut successful_test_cases: Vec<(Cursor<Vec<u8>>, u64)> = vec![
             (Cursor::new(GZIP_MAGIC_NUM.to_vec()), 0),
             (
                 Cursor::new({
