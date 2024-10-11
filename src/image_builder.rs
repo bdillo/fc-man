@@ -364,11 +364,74 @@ impl ImageBuilder {
 
 #[cfg(test)]
 mod test {
+    use std::io::Cursor;
+
     use super::*;
 
-    // TODO: refactor stuff to be more testable (don't take paths and stuff directly)
+    fn build_image_root_fs<S>(_state: S) -> ImageRootFs<S>
+    where
+        S: ImageRootFsState,
+    {
+        ImageRootFs {
+            id: "id".to_owned(),
+            working_dir: PathBuf::default(),
+            mount_dir: PathBuf::default(),
+            rootfs_file: PathBuf::default(),
+            _state: PhantomData::<S>,
+        }
+    }
+
     #[test]
-    fn test() {
-        todo!()
+    fn test_find_gzip_offset() -> Result<(), ImageBuilderError> {
+        let mut successful_test_cases: Vec<(Cursor<Vec<u8>>, usize)> = vec![
+            (Cursor::new(GZIP_MAGIC_NUM.to_vec()), 0),
+            (
+                Cursor::new({
+                    let mut buf = [0x00, 0x01, 0xFF, 0x1F, 0x00].to_vec();
+                    buf.extend(GZIP_MAGIC_NUM);
+                    buf.extend([0xFF; 10]);
+                    buf
+                }),
+                5,
+            ),
+            (
+                Cursor::new({
+                    let mut buf = [0xFF; 5000].to_vec();
+                    buf.extend(GZIP_MAGIC_NUM);
+                    buf.extend([0x00; 2048]);
+                    buf
+                }),
+                5000,
+            ),
+            (
+                Cursor::new({
+                    let mut buf = [0x01; 100000].to_vec();
+                    buf.extend(GZIP_MAGIC_NUM);
+                    buf.extend([0x0F; 10]);
+                    buf
+                }),
+                100000,
+            ),
+        ];
+
+        let mounted_fs = build_image_root_fs(Mounted {});
+
+        for (buf, expected_offset) in successful_test_cases.iter_mut() {
+            let offset = mounted_fs.find_vmlinuz_gzip_offset(buf)?;
+            assert_eq!(offset, *expected_offset);
+        }
+
+        let mut failed_test_cases: Vec<Cursor<&[u8]>> = vec![
+            Cursor::new(&[0x00]),
+            Cursor::new(&[0xFF; 1024]),
+            Cursor::new(&[0x00, 0x01, 0x1F, 0x8B, 0x07, 0x01]),
+        ];
+
+        for buf in failed_test_cases.iter_mut() {
+            let result = mounted_fs.find_vmlinuz_gzip_offset(buf);
+            assert!(result.is_err());
+        }
+
+        Ok(())
     }
 }
