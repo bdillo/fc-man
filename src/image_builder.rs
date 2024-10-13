@@ -1,14 +1,3 @@
-// make fs
-// format fs
-// mount fs
-// copy from image
-// chroot
-// customize rootfs, openssh, openrc, etc
-// grab initramfs, vmlinuz
-// extract vmlinux from vmlinuz
-// unmount fs
-// done!
-
 use flate2::read::GzDecoder;
 use log::debug;
 use nix::{
@@ -62,10 +51,10 @@ pub enum ImageBuilderError {
 }
 
 /// VM image with paths to all related components needed to launch a vm
-struct Image<'a> {
-    rootfs_path: &'a Path,
-    initrd_path: &'a Path,
-    kernel_path: &'a Path,
+pub struct Image {
+    rootfs_path: PathBuf,
+    initrd_path: PathBuf,
+    kernel_path: PathBuf,
 }
 
 /// Marker trait for our filesystem state structs. Doing this to restrict what types `ImageRootFs` is generic over
@@ -165,6 +154,10 @@ impl ImageRootFs<Unmounted> {
 }
 
 impl ImageRootFs<Mounted> {
+    fn rootfs_file(&self) -> &Path {
+        &self.rootfs_file
+    }
+
     /// Decompresses and untars our base filesystem to our mounted path
     fn copy_from_base_fs(&self, base_fs_path: &Path) -> Result<(), ImageBuilderError> {
         debug!("Decompressing tarball '{}'", base_fs_path.display());
@@ -223,7 +216,7 @@ impl ImageRootFs<Mounted> {
     }
 
     /// Grabs the initframfs before we unmount the rootfs and puts it in our working dir
-    fn extract_initramfs(&self) -> Result<(), ImageBuilderError> {
+    fn extract_initramfs(&self) -> Result<PathBuf, ImageBuilderError> {
         // TODO: take path as arg
         let mut initramfs_path = self.mount_dir.clone();
         initramfs_path.push(BOOT);
@@ -238,9 +231,9 @@ impl ImageRootFs<Mounted> {
             dest_path.display()
         );
 
-        fs::copy(initramfs_path, dest_path)?;
+        fs::copy(&initramfs_path, &dest_path)?;
 
-        Ok(())
+        Ok(dest_path)
     }
 
     fn find_vmlinuz_gzip_offset<R: Read>(&self, vmlinuz_file: R) -> Result<u64, ImageBuilderError> {
@@ -266,7 +259,7 @@ impl ImageRootFs<Mounted> {
         }
     }
 
-    fn extract_and_decompress_vmlinuz(&self) -> Result<(), ImageBuilderError> {
+    fn extract_and_decompress_vmlinuz(&self) -> Result<PathBuf, ImageBuilderError> {
         // TODO: take all these paths as args
         let mut vmlinuz_path = self.mount_dir.clone();
         vmlinuz_path.push(BOOT);
@@ -293,7 +286,7 @@ impl ImageRootFs<Mounted> {
         debug!("Writing decompressed kernel to '{}'", &out_path.display());
         io::copy(&mut gzip, &mut out)?;
 
-        Ok(())
+        Ok(out_path)
     }
 
     /// Unmounts our filesystem when we're done. This consumes self
@@ -357,7 +350,7 @@ impl ImageBuilder {
         Ok(())
     }
 
-    pub fn build_image_from_base(&self, base_fs_path: &Path) -> Result<(), ImageBuilderError> {
+    pub fn build_image_from_base(&self, base_fs_path: &Path) -> Result<Image, ImageBuilderError> {
         // TODO: hash the base rootfs and use that as working dir? or is there a better way to organize this
         let id = Uuid::new_v4().to_string();
 
@@ -373,11 +366,21 @@ impl ImageBuilder {
 
         mounted_rootfs.copy_from_base_fs(base_fs_path)?;
         mounted_rootfs.execute_setup(get_alpine_setup_commands())?;
-        mounted_rootfs.extract_initramfs()?;
-        mounted_rootfs.extract_and_decompress_vmlinuz()?;
+
+        // TODO: clean up these names to be a bit more consistent
+        let initram_fs_path = mounted_rootfs.extract_initramfs()?;
+        let vmlinux_path = mounted_rootfs.extract_and_decompress_vmlinuz()?;
+        let rootfs_path = mounted_rootfs.rootfs_file();
+
+        let image = Image {
+            rootfs_path: rootfs_path.to_path_buf(),
+            initrd_path: initram_fs_path,
+            kernel_path: vmlinux_path,
+        };
+
         mounted_rootfs.unmount()?;
 
-        Ok(())
+        Ok(image)
     }
 }
 

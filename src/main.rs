@@ -10,5 +10,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("Starting...");
     let args = CliArgs::parse();
     let image_builder = ImageBuilder::default();
-    Ok(image_builder.build_image_from_base(Path::new(&args.base_fs))?)
+    let image = image_builder.build_image_from_base(Path::new(&args.base_fs))?;
+
+    Ok(())
 }
