@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::utils::get_alpine_setup_commands;
 
+// TODO: clean this up
 static RESOLV_CONF_PATH: Lazy<&Path> = Lazy::new(|| Path::new("/etc/resolv.conf"));
 
 const VAR_DIR: &str = "/var/lib/fc-man";
@@ -51,6 +52,7 @@ pub enum ImageBuilderError {
 }
 
 /// VM image with paths to all related components needed to launch a vm
+#[derive(Clone, Debug)]
 pub struct Image {
     rootfs_path: PathBuf,
     initrd_path: PathBuf,

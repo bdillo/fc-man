@@ -1,5 +1,6 @@
 use std::process::Command;
 
+pub const FIRECRACKER_BIN: &str = "firecracker";
 const APK: &str = "/sbin/apk";
 const RC_UPDATE: &str = "/sbin/rc-update";
 
